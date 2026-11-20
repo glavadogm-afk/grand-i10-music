@@ -1,0 +1,372 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GRAND i10 MUSIC - Admin</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 25px;
+  background: #080808;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+
+.container {
+  max-width: 750px;
+  margin: auto;
+}
+
+h1 { color: #1ed760; }
+
+.card {
+  background: #181818;
+  padding: 20px;
+  margin: 15px 0;
+  border-radius: 12px;
+}
+
+button {
+  background: #1ed760;
+  border: none;
+  padding: 12px 18px;
+  border-radius: 25px;
+  font-weight: bold;
+  cursor: pointer;
+  margin: 5px;
+}
+
+button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.status {
+  color: #1ed760;
+  margin: 12px 0;
+}
+
+.song {
+  border-bottom: 1px solid #333;
+  padding: 15px 0;
+}
+
+.song button { font-size: 12px; }
+
+.muted { color: #aaa; font-size: 13px; }
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<h1>🚗 GRAND i10 MUSIC</h1>
+<p>Panel de administración musical</p>
+
+<div class="card">
+  <h3>1. Conexión con Spotify</h3>
+  <p id="spotifyStatus" class="status">
+    No conectado
+  </p>
+  <button id="loginBtn">Conectar Spotify</button>
+  <button id="logoutBtn" hidden>Cerrar sesión</button>
+</div>
+
+<div class="card">
+  <h3>2. Solicitudes de canciones</h3>
+  <p class="muted">
+    Las solicitudes se eliminan automáticamente después de 24 horas.
+  </p>
+  <p id="requestStatus">Cargando solicitudes...</p>
+  <div id="requests"></div>
+</div>
+
+</div>
+
+<script>
+const CLIENT_ID = "ca146b195d8e4d68b9743bd5428344e5";
+
+const REDIRECT_URI =
+"https://glavadogm-afk.github.io/grand-i10-music/admin.html";
+
+const API =
+"https://grand-i10-music-api.glavadogm.workers.dev";
+
+const SCOPES =
+"user-modify-playback-state user-read-playback-state";
+
+let accessToken = null;
+let tokenExpiry = 0;
+let processed = new Set();
+
+const $ = id => document.getElementById(id);
+
+function randomString(length) {
+  const chars =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+
+  return Array.from(bytes)
+    .map(b => chars[b % chars.length])
+    .join("");
+}
+
+async function challenge(verifier) {
+  const data = new TextEncoder().encode(verifier);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+
+  return btoa(String.fromCharCode(...new Uint8Array(hash)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+async function login() {
+  const verifier = randomString(64);
+  const state = randomString(24);
+
+  sessionStorage.setItem("spotify_verifier", verifier);
+  sessionStorage.setItem("spotify_state", state);
+
+  const hashed = await challenge(verifier);
+
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: "code",
+    redirect_uri: REDIRECT_URI,
+    code_challenge_method: "S256",
+    code_challenge: hashed,
+    scope: SCOPES,
+    state: state
+  });
+
+  location.href =
+  "https://accounts.spotify.com/authorize?" + params.toString();
+}
+
+async function handleCallback() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get("code");
+  const returnedState = params.get("state");
+
+  if (!code) return;
+
+  if (returnedState !== sessionStorage.getItem("spotify_state")) {
+    alert("Error de seguridad en la autorización.");
+    return;
+  }
+
+  const verifier = sessionStorage.getItem("spotify_verifier");
+
+  if (!verifier) {
+    alert("No se encontró el código de autorización.");
+    return;
+  }
+
+  const response = await fetch(
+    "https://accounts.spotify.com/api/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        client_id: CLIENT_ID,
+        grant_type: "authorization_code",
+        code: code,
+        redirect_uri: REDIRECT_URI,
+        code_verifier: verifier
+      })
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.error_description || data.error);
+  }
+
+  accessToken = data.access_token;
+  tokenExpiry = Date.now() + data.expires_in * 1000;
+
+  sessionStorage.removeItem("spotify_verifier");
+  sessionStorage.removeItem("spotify_state");
+
+  history.replaceState({}, "", REDIRECT_URI);
+
+  updateSpotifyStatus();
+}
+
+function updateSpotifyStatus() {
+  $("spotifyStatus").textContent =
+    accessToken ? "✅ Spotify conectado" : "No conectado";
+
+  $("loginBtn").hidden = !!accessToken;
+  $("logoutBtn").hidden = !accessToken;
+}
+
+function logout() {
+  accessToken = null;
+  tokenExpiry = 0;
+  processed.clear();
+  updateSpotifyStatus();
+}
+
+function fingerprint(item) {
+  return [
+    item.song || "",
+    item.artist || "",
+    item.createdAt || item.timestamp || ""
+  ].join("|").toLowerCase();
+}
+
+async function loadRequests() {
+  try {
+    const response = await fetch(API + "/requests");
+
+    if (!response.ok) throw new Error("Error consultando solicitudes");
+
+    const data = await response.json();
+
+    const requests = Array.isArray(data)
+      ? data
+      : data.requests || data.data || data.items || [];
+
+    $("requests").replaceChildren();
+
+    $("requestStatus").textContent =
+      requests.length + " solicitud(es) recibida(s)";
+
+    if (!requests.length) {
+      $("requests").textContent = "Todavía no hay canciones solicitadas.";
+      return;
+    }
+
+    requests.forEach(item => {
+      const song = document.createElement("div");
+      song.className = "song";
+
+      const title = document.createElement("strong");
+      title.textContent = item.song || "Canción sin nombre";
+
+      const artist = document.createElement("p");
+      artist.textContent = item.artist || "Artista desconocido";
+
+      const button = document.createElement("button");
+      const key = fingerprint(item);
+
+      button.textContent = processed.has(key)
+        ? "✅ Agregada"
+        : "Agregar a Spotify";
+
+      button.disabled = processed.has(key);
+
+      button.onclick = () => addToSpotify(item, button);
+
+      song.append(title, artist, button);
+      $("requests").appendChild(song);
+    });
+
+  } catch (error) {
+    $("requestStatus").textContent =
+      "No se pudieron cargar las solicitudes. " + error.message;
+  }
+}
+
+async function addToSpotify(item, button) {
+  if (!accessToken || Date.now() >= tokenExpiry) {
+    alert("Conecta Spotify nuevamente.");
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = "Buscando canción...";
+
+  try {
+    const query = `track:${item.song} artist:${item.artist}`;
+
+    const searchUrl =
+      "https://api.spotify.com/v1/search?" +
+      new URLSearchParams({
+        q: query,
+        type: "track",
+        limit: "1"
+      });
+
+    const searchResponse = await fetch(searchUrl, {
+      headers: {
+        Authorization: "Bearer " + accessToken
+      }
+    });
+
+    const searchData = await searchResponse.json();
+
+    if (!searchResponse.ok) {
+      throw new Error(
+        searchData.error?.message || "Error buscando canción"
+      );
+    }
+
+    const track = searchData.tracks?.items?.[0];
+
+    if (!track) {
+      throw new Error("No encontramos esa canción en Spotify.");
+    }
+
+    button.textContent = "Agregando a la cola...";
+
+    const queueResponse = await fetch(
+      "https://api.spotify.com/v1/me/player/queue?uri=" +
+      encodeURIComponent(track.uri),
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + accessToken
+        }
+      }
+    );
+
+    if (!queueResponse.ok) {
+      const error = await queueResponse.json();
+      throw new Error(
+        error.error?.message || "No se pudo agregar a la cola"
+      );
+    }
+
+    processed.add(fingerprint(item));
+
+    button.textContent = "✅ Agregada";
+    button.disabled = true;
+
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Reintentar";
+    alert(error.message);
+  }
+}
+
+$("loginBtn").onclick = login;
+$("logoutBtn").onclick = logout;
+
+(async function init() {
+  try {
+    await handleCallback();
+    updateSpotifyStatus();
+    await loadRequests();
+
+    setInterval(loadRequests, 15000);
+
+  } catch (error) {
+    alert("Error de conexión: " + error.message);
+    updateSpotifyStatus();
+  }
+})();
+</script>
+</body>
+</html>
