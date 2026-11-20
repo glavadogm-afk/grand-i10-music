@@ -3,7 +3,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GRAND i10 MUSIC</title>
 <style>
 * { box-sizing: border-box; }
@@ -17,17 +17,17 @@ body {
 .container {
   max-width: 440px;
   margin: auto;
-  padding: 35px 22px;
+  padding: 30px 20px;
 }
-.logo { font-size: 55px; margin-bottom: 12px; }
+.logo { font-size: 55px; }
 h1 { letter-spacing: 2px; font-size: 27px; }
 .green { color: #1ed760; }
-.subtitle { color: #aaa; margin-bottom: 30px; }
+.subtitle { color: #aaa; }
 .card {
   background: #202020;
-  padding: 23px;
+  padding: 22px;
   border-radius: 17px;
-  margin-top: 20px;
+  margin-top: 22px;
 }
 input {
   width: 100%;
@@ -35,7 +35,7 @@ input {
   border-radius: 9px;
   border: none;
   font-size: 16px;
-  margin: 12px 0;
+  margin: 8px 0;
 }
 button {
   background: #1ed760;
@@ -47,8 +47,19 @@ button {
   width: 100%;
   font-size: 16px;
   cursor: pointer;
+  margin-top: 10px;
 }
-.note { color: #999; font-size: 12px; margin-top: 25px; }
+button:disabled { opacity: .5; }
+.note { color: #999; font-size: 12px; }
+#status { margin: 15px 0; font-size: 14px; }
+.song {
+  background: #303030;
+  padding: 13px;
+  border-radius: 10px;
+  margin: 9px 0;
+  text-align: left;
+}
+.song strong { color: #1ed760; }
 </style>
 </head>
 <body>
@@ -59,13 +70,103 @@ button {
 
   <div class="card">
     <h2>¡Tú eliges la música!</h2>
-    <p>Busca tu canción favorita y prepárate para disfrutar el viaje.</p>
-    <input type="text" placeholder="Nombre de canción o artista" disabled>
-    <button disabled>BUSCAR EN SPOTIFY</button>
-    <p class="note">La conexión con Spotify estará disponible próximamente.</p>
+    <p>Solicita tu canción favorita.</p>
+
+    <input id="song" placeholder="Nombre de la canción">
+    <input id="artist" placeholder="Nombre del artista (opcional)">
+
+    <button id="send" onclick="sendRequest()">
+      ENVIAR CANCIÓN
+    </button>
+    <div id="status"></div>
   </div>
 
-  <p class="note">GRAND i10 MUSIC · Hecho para disfrutar 🎧</p>
+  <div class="card">
+    <h2>🎧 Cola de canciones</h2>
+    <div id="queue">Cargando canciones...</div>
+  </div>
+
+  <p class="note">GRAND i10 MUSIC · Hecho para disfrutar 🎵</p>
 </div>
+
+<script>
+const API = "https://grand-i10-music-api.glavadogm.workers.dev";
+
+async function sendRequest() {
+  const song = document.getElementById("song").value.trim();
+  const artist = document.getElementById("artist").value.trim();
+  const status = document.getElementById("status");
+  const button = document.getElementById("send");
+
+  if (!song) {
+    status.textContent = "Escribe el nombre de una canción.";
+    return;
+  }
+
+  button.disabled = true;
+  status.textContent = "Enviando solicitud...";
+
+  try {
+    const response = await fetch(API + "/requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ song, artist })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      throw new Error("No se pudo enviar la canción.");
+    }
+
+    document.getElementById("song").value = "";
+    document.getElementById("artist").value = "";
+    status.textContent = "¡Canción enviada correctamente! 🎉";
+    await loadQueue();
+
+  } catch (error) {
+    status.textContent = "Error al enviar. Inténtalo nuevamente.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function loadQueue() {
+  const queue = document.getElementById("queue");
+
+  try {
+    const response = await fetch(API + "/requests");
+    if (!response.ok) throw new Error("Error");
+
+    const data = await response.json();
+    queue.replaceChildren();
+
+    if (!data.requests || data.requests.length === 0) {
+      queue.textContent = "Todavía no hay canciones solicitadas.";
+      return;
+    }
+
+    data.requests.forEach(item => {
+      const div = document.createElement("div");
+      div.className = "song";
+
+      const title = document.createElement("strong");
+      title.textContent = item.song;
+
+      const artist = document.createElement("div");
+      artist.textContent = item.artist || "Artista no indicado";
+
+      div.append(title, artist);
+      queue.appendChild(div);
+    });
+
+  } catch (error) {
+    queue.textContent = "No se pudo cargar la cola.";
+  }
+}
+
+loadQueue();
+setInterval(loadQueue, 15000);
+</script>
 </body>
 </html>
